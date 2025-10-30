@@ -57,6 +57,12 @@ interface ProcessedRequest {
     note: string;
 }
 
+interface MasterStyleRecord {
+    brand: string;
+    style: string;
+    description: string;
+}
+
 // From constants.ts
 const NOTE_OPTIONS = [
   '', // Default empty option
@@ -177,7 +183,8 @@ const ImportModal = ({ isOpen, onClose, onFetchFromUrl, onFileUpload, isLoading 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center" onClick={onClose}>
       <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">Import Data</h2>
+        <h2 className="text-2xl font-bold text-gray-800 mb-4">Import Master Data</h2>
+        <p className="text-sm text-gray-600 mb-4">Load a master CSV file with columns: BRAND, STYLE #, DESCRIPTION. This data will be used to auto-fill details for styles you enter in the main text area.</p>
         <div className="space-y-4">
           <div>
             <label htmlFor="modal-url-input" className="block text-sm font-medium text-gray-700 mb-1">
@@ -907,6 +914,7 @@ const DEFAULT_STORE_CODES = [
 const App = () => {
   const [stylesInput, setStylesInput] = useState('');
   const [tableData, setTableData] = useState([]);
+  const [masterStyleData, setMasterStyleData] = useState([]);
   const [filter, setFilter] = useState('');
   const [filterColumn, setFilterColumn] = useState('all');
   const [showStats, setShowStats] = useState(false);
@@ -959,6 +967,62 @@ const App = () => {
       localStorage.setItem('storeCodes', JSON.stringify(sortedStores));
   };
 
+  const processAndSetMasterData = (csvText) => {
+    try {
+        const lines = csvText.trim().split('\n').filter(line => line.trim() !== '');
+        if (lines.length < 2) {
+            showAlert('CSV must have a header and at least one data row.', 'error');
+            return;
+        }
+
+        const headerLine = lines.shift().trim().toLowerCase();
+        const headers = headerLine.split(',').map(h => h.trim().replace(/"/g, ''));
+
+        const styleIndex = headers.findIndex(h => h === 'style #' || h === 'style');
+        const brandIndex = headers.findIndex(h => h === 'brand');
+        const descriptionIndex = headers.findIndex(h => h === 'description');
+
+        if (styleIndex === -1 || brandIndex === -1 || descriptionIndex === -1) {
+            showAlert('CSV header must contain "BRAND", "STYLE #" (or "STYLE"), and "DESCRIPTION".', 'error');
+            return;
+        }
+
+        const parsedMasterData = lines.map(line => {
+            // Regex to handle CSVs with values that contain commas
+            const parts = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [];
+            
+            if (parts.length < headers.length) {
+                console.warn(`Skipping malformed CSV line: ${line}`);
+                return null;
+            }
+
+            const cleanPart = (p) => p ? p.trim().replace(/^"|"$/g, '').trim() : '';
+
+            const brand = cleanPart(parts[brandIndex]).toUpperCase();
+            const style = cleanPart(parts[styleIndex]).toUpperCase();
+            const description = cleanPart(parts[descriptionIndex]).toUpperCase();
+
+            if (!brand || !style) {
+                console.warn(`Skipping master data line with missing brand or style: ${line}`);
+                return null;
+            }
+            return { brand, style, description };
+        }).filter(Boolean);
+
+        if (parsedMasterData.length === 0) {
+            showAlert('No valid data rows could be parsed from the file.', 'info');
+            return;
+        }
+
+        setMasterStyleData(parsedMasterData);
+        showAlert(`Successfully loaded ${parsedMasterData.length} styles as the data source.`, 'success');
+
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        showAlert(`Error processing master data: ${errorMessage}`, 'error');
+    }
+  };
+
   const handleFetchFromUrl = async (urlToFetch) => {
     if (!urlToFetch) {
         showAlert('Please enter a valid URL.', 'error');
@@ -972,7 +1036,7 @@ const App = () => {
             throw new Error(`Failed to fetch data: ${response.status} ${response.statusText}`);
         }
         const csvData = await response.text();
-        handleLoadStyles(csvData);
+        processAndSetMasterData(csvData);
         setIsImportModalOpen(false); // Close modal on success
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -996,7 +1060,7 @@ const App = () => {
         try {
             const text = e.target?.result;
             if (typeof text === 'string') {
-                handleLoadStyles(text);
+                processAndSetMasterData(text);
                 setIsImportModalOpen(false); // Close modal on success
             } else {
                 throw new Error('File content could not be read as text.');
@@ -1017,87 +1081,47 @@ const App = () => {
     event.target.value = null; // Reset file input to allow re-uploading the same file
   };
 
-const handleLoadStyles = (dataToLoad) => {
+const handleLoadStyles = () => {
     setIsLoading(true);
     setLoadingText('Loading Styles...');
     try {
-        const inputData = dataToLoad ?? stylesInput;
-        const trimmedInput = inputData.trim();
+        const trimmedInput = stylesInput.trim();
         if (!trimmedInput) {
              setIsLoading(false);
              return;
         }
 
-        let newRows = [];
-        const prefix = 'CSV_DATA_START:';
-        let isCsv = false;
-        let dataContent = trimmedInput;
-        
-        const prefixIndex = trimmedInput.toUpperCase().indexOf(prefix.toUpperCase());
-        if (prefixIndex !== -1) {
-            isCsv = true;
-            dataContent = trimmedInput.substring(prefixIndex + prefix.length);
-        }
-
-        const lines = dataContent.trim().split('\n').filter(line => line.trim() !== '');
+        const lines = trimmedInput.split('\n').filter(line => line.trim() !== '');
 
         if (lines.length === 0) {
             setIsLoading(false);
             return;
         }
-        
-        const header = lines[0].trim().toLowerCase();
-        const expectedHeader = 'brand,style #,description';
-        
-        if (!isCsv && header === expectedHeader) {
-            isCsv = true;
-        }
 
-        if (isCsv) {
-            if (header === expectedHeader) lines.shift(); // Remove header if it matches
-            if (lines.length === 0) {
-                throw new Error('CSV data contains a header but no data rows.');
-            }
-            
-            newRows = lines.map((line, index) => {
-                const parts = line.split(',');
-                if (parts.length < 3) {
-                    console.warn(`Skipping invalid CSV line (not enough columns): ${line}`);
-                    return null; 
-                }
-                const brand = parts[0].trim().toUpperCase();
-                const style = parts[1].trim().toUpperCase();
-                const description = parts.slice(2).join(',').trim().toUpperCase();
+        const newRows = lines.map((line, index) => {
+             const style = line.trim().toUpperCase();
+             const masterRecord = masterStyleData.find(record => record.style.toUpperCase() === style);
 
-                if (!brand || !style || !description) {
-                    console.warn(`Skipping invalid CSV line (empty columns): ${line}`);
-                    return null;
-                }
-
-                const newId = (tableData.length > 0 ? Math.max(...tableData.map(r => r.id)) : 0) + index + 1;
-                return { id: newId, displayId: newId, brand, style, description, from: '', to: '', note: '', customNote: '' };
-            }).filter((row) => row !== null);
-        } else {
-            // Treat as simple list of styles
-            const styleList = lines.map(line => line.trim().toUpperCase());
-            newRows = styleList.map((style, index) => {
-                 const newId = (tableData.length > 0 ? Math.max(...tableData.map(r => r.id)) : 0) + index + 1;
-                 return {
-                    id: newId,
-                    displayId: newId,
-                    brand: '',
-                    style: style,
-                    description: '',
-                    from: '',
-                    to: '',
-                    note: '',
-                    customNote: ''
-                 };
-            });
-        }
+             const newId = (tableData.length > 0 ? Math.max(...tableData.map(r => r.id)) : 0) + index + 1;
+             return {
+                id: newId,
+                displayId: newId,
+                brand: masterRecord ? masterRecord.brand : '',
+                style: style,
+                description: masterRecord ? masterRecord.description : '',
+                from: '',
+                to: '',
+                note: '',
+                customNote: ''
+             };
+        });
         
         if (newRows.length > 0) {
             setTableData(prevData => [...prevData, ...newRows]);
+            if(masterStyleData.length > 0) {
+                const foundCount = newRows.filter(r => r.brand).length;
+                showAlert(`Loaded ${newRows.length} styles. Found details for ${foundCount}.`, 'success');
+            }
         }
         setStylesInput('');
 
@@ -1506,15 +1530,13 @@ const handleViewStatistics = () => {
     { value: 'to', label: 'To' },
   ];
 
-  const placeholderText = `e.g.
+  const placeholderText = `First, use the "Import Data" button to load your master CSV file.
+
+Then, enter the style numbers you want to request, one per line.
+e.g.
 DD5975 010
 CW9610 010
-DV0050 010
-
-Or, to load CSV data manually, paste it here starting with:
-CSV_DATA_START:BRAND,STYLE #,DESCRIPTION
-NIKE,DD5975 010,Nike Air Max
-ADIDAS,CW9610 010,Adidas Ultraboost`;
+DV0050 010`;
 
   return (
     <div className="bg-gray-100 min-h-screen font-sans">
@@ -1543,7 +1565,7 @@ ADIDAS,CW9610 010,Adidas Ultraboost`;
         <div className="bg-white p-4 rounded-lg shadow-md mb-4 space-y-4">
           <div>
             <label htmlFor="styles-input" className="block text-sm font-medium text-gray-700 mb-1">
-              Enter Styles (one per row) or Paste CSV Data:
+              Enter Style #s to Request (one per line):
             </label>
             <textarea
               id="styles-input"
@@ -1553,7 +1575,7 @@ ADIDAS,CW9610 010,Adidas Ultraboost`;
               placeholder={placeholderText}
             />
             <div className="flex flex-wrap gap-2 mt-2">
-              <button onClick={() => handleLoadStyles()} disabled={isLoading || !stylesInput} className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:bg-gray-400 font-semibold">
+              <button onClick={handleLoadStyles} disabled={isLoading || !stylesInput} className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:bg-gray-400 font-semibold">
                 {isLoading && loadingText.startsWith('Loading Styles') ? loadingText : 'Load from Text Area'}
               </button>
               <button onClick={startScan} className="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700">
