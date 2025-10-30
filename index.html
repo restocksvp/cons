@@ -184,11 +184,11 @@ const ImportModal = ({ isOpen, onClose, onFetchFromUrl, onFileUpload, isLoading 
     <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center" onClick={onClose}>
       <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
         <h2 className="text-2xl font-bold text-gray-800 mb-4">Import Master Data</h2>
-        <p className="text-sm text-gray-600 mb-4">Load a master CSV file with columns: BRAND, STYLE #, DESCRIPTION. This data will be used to auto-fill details for styles you enter in the main text area.</p>
+        <p className="text-sm text-gray-600 mb-4">Load a master CSV or TSV file with columns: BRAND, STYLE #, DESCRIPTION. This data will be used to auto-fill details for styles you enter in the main text area.</p>
         <div className="space-y-4">
           <div>
             <label htmlFor="modal-url-input" className="block text-sm font-medium text-gray-700 mb-1">
-              Import from CSV URL:
+              Import from CSV/TSV URL:
             </label>
             <div className="flex gap-2">
               <input
@@ -213,12 +213,12 @@ const ImportModal = ({ isOpen, onClose, onFetchFromUrl, onFileUpload, isLoading 
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Import from Local CSV File:
+              Import from Local CSV/TSV File:
             </label>
             <input
               id="modal-file-upload"
               type="file"
-              accept=".csv,text/csv"
+              accept=".csv,text/csv,.tsv,text/tab-separated-values"
               onChange={handleFileChange}
               className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-purple-100 file:text-purple-700 hover:file:bg-purple-200"
               disabled={isLoading}
@@ -969,31 +969,42 @@ const App = () => {
 
   const processAndSetMasterData = (csvText) => {
     try {
-        const lines = csvText.trim().split('\n').filter(line => line.trim() !== '');
+        const lines = csvText.trim().replace(/\r\n/g, '\n').split('\n').filter(line => line.trim() !== '');
         if (lines.length < 2) {
-            showAlert('CSV must have a header and at least one data row.', 'error');
+            showAlert('File must have a header and at least one data row.', 'error');
             return;
         }
 
-        const headerLine = lines.shift().trim().toLowerCase();
-        const headers = headerLine.split(',').map(h => h.trim().replace(/"/g, ''));
+        const headerLine = lines.shift().trim();
+        const delimiter = headerLine.includes('\t') ? '\t' : ',';
+
+        const headers = headerLine.toLowerCase().split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
 
         const styleIndex = headers.findIndex(h => h === 'style #' || h === 'style');
         const brandIndex = headers.findIndex(h => h === 'brand');
         const descriptionIndex = headers.findIndex(h => h === 'description');
 
         if (styleIndex === -1 || brandIndex === -1 || descriptionIndex === -1) {
-            showAlert('CSV header must contain "BRAND", "STYLE #" (or "STYLE"), and "DESCRIPTION".', 'error');
+            showAlert('Header must contain "BRAND", "STYLE #" (or "STYLE"), and "DESCRIPTION".', 'error');
             return;
         }
 
+        const totalDataRows = lines.length;
+
         const parsedMasterData = lines.map(line => {
-            // Regex to handle CSVs with values that contain commas
-            const parts = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [];
+            let parts;
+            if (delimiter === '\t') {
+                parts = line.split('\t');
+            } else {
+                // Keep original regex for CSV to avoid breaking changes for existing users.
+                // This regex has known issues with empty fields.
+                parts = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [];
+            }
             
-            if (parts.length < headers.length) {
-                console.warn(`Skipping malformed CSV line: ${line}`);
-                return null;
+            const maxIndex = Math.max(styleIndex, brandIndex, descriptionIndex);
+            if (parts.length <= maxIndex) {
+                 console.warn(`Skipping malformed line (not enough columns or parse error): ${line}`);
+                 return null;
             }
 
             const cleanPart = (p) => p ? p.trim().replace(/^"|"$/g, '').trim() : '';
@@ -1009,13 +1020,25 @@ const App = () => {
             return { brand, style, description };
         }).filter(Boolean);
 
+        const skippedRowCount = totalDataRows - parsedMasterData.length;
+
         if (parsedMasterData.length === 0) {
-            showAlert('No valid data rows could be parsed from the file.', 'info');
+            let message = 'No valid data rows could be parsed from the file.';
+            let type = 'info';
+            if (skippedRowCount > 0) {
+                message = `All ${skippedRowCount} data rows were skipped due to formatting errors or missing data. Please check the file and browser console.`;
+                type = 'error';
+            }
+            showAlert(message, type);
             return;
         }
 
         setMasterStyleData(parsedMasterData);
-        showAlert(`Successfully loaded ${parsedMasterData.length} styles as the data source.`, 'success');
+        let successMessage = `Successfully loaded ${parsedMasterData.length} styles as the data source.`;
+        if (skippedRowCount > 0) {
+            successMessage += ` ${skippedRowCount} row(s) were skipped due to errors.`;
+        }
+        showAlert(successMessage, 'success');
 
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
