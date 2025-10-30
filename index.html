@@ -996,9 +996,9 @@ const App = () => {
             if (delimiter === '\t') {
                 parts = line.split('\t');
             } else {
-                // Keep original regex for CSV to avoid breaking changes for existing users.
-                // This regex has known issues with empty fields.
-                parts = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [];
+                // Use a more robust regex to split CSV lines, which correctly handles
+                // quoted fields containing commas and empty fields.
+                parts = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
             }
             
             const maxIndex = Math.max(styleIndex, brandIndex, descriptionIndex);
