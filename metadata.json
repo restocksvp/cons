@@ -1,0 +1,7 @@
+{
+  "name": "Store Transfer Request Generator",
+  "description": "An application to create and manage store-to-store transfer requests. Users can input styles, load them into a table, and specify transfer details.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
